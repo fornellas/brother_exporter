@@ -15,7 +15,7 @@ var (
 )
 
 func metricsHandler(w http.ResponseWriter, req *http.Request) {
-	log.Printf("< %s GET /metrics", req.RemoteAddr)
+	log.Printf("< %s GET /probe", req.RemoteAddr)
 
 	brotherUrls, ok := req.URL.Query()["address"]
 	if !ok {
@@ -64,13 +64,13 @@ func metricsHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	fmt.Fprintf(w, "%s", timeSeriesGroup)
-	log.Printf("> %s GET /metrics 200", req.RemoteAddr)
+	log.Printf("> %s GET /probe 200", req.RemoteAddr)
 }
 
 func main() {
 	kingpin.Parse()
 
-	http.HandleFunc("/metrics", metricsHandler)
+	http.HandleFunc("/probe", metricsHandler)
 
 	log.Printf("Listening at %s", *address)
 	if err := http.ListenAndServe(*address, nil); err != http.ErrServerClosed {
