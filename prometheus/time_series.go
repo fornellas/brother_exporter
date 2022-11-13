@@ -22,9 +22,12 @@ func (labels Labels) String() string {
 	sort.Strings(keys)
 
 	str := ""
-	for _, key := range keys {
+	for i, key := range keys {
+		if i > 0 {
+			str += ","
+		}
 		value := labels[key]
-		str += key + `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
+		str += key + `="` + strings.ReplaceAll(value, `"`, `\"`) + `"`
 	}
 	return str
 }
@@ -72,11 +75,23 @@ func (ts *TimeSeries) String() string {
 	return ts.metricName + `{` + ts.labels.String() + `} ` + strconv.FormatFloat(ts.Value(), 'E', -1, 64)
 }
 
-type TimeSeriesGroup []*TimeSeries
+type TimeSeriesGroup struct {
+	timeSeriesSlice []*TimeSeries
+}
 
-func (r TimeSeriesGroup) String() string {
+func NewTimeSeriesGroup() *TimeSeriesGroup {
+	return &TimeSeriesGroup{
+		timeSeriesSlice: []*TimeSeries{},
+	}
+}
+
+func (tsg *TimeSeriesGroup) Add(ts *TimeSeries) {
+	tsg.timeSeriesSlice = append(tsg.timeSeriesSlice, ts)
+}
+
+func (tsg TimeSeriesGroup) String() string {
 	str := ""
-	for _, ts := range r {
+	for _, ts := range tsg.timeSeriesSlice {
 		str += ts.String() + "\n"
 	}
 	return str

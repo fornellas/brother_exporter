@@ -4,13 +4,74 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
-	"strconv"
+
+	"github.com/iancoleman/strcase"
 
 	"github.com/fornellas/brother_exporter/prometheus"
-	"github.com/iancoleman/strcase"
 )
 
-func ReadMaintenanceInfo(ioReader io.Reader) (prometheus.TimeSeriesGroup, error) {
+type ColumnName string
+
+type TimeSeriesLabels struct {
+	MetricNameSuffix string
+	ColumnNames      []ColumnName
+	LabelName        string
+	MapFn            func(ColumnName) (string, error)
+}
+
+type Config struct {
+	Info             []ColumnName
+	TimeSeriesLabels map[string]map[ColumnName]string
+}
+
+func (c *Config) getInfoTimeSeries(values map[ColumnName]string) (*prometheus.TimeSeries, error) {
+	infoLabels := prometheus.Labels{}
+	for _, infoLabel := range c.Info {
+		value, ok := values[(infoLabel)]
+		if !ok {
+			return nil, fmt.Errorf("missing '%s'", infoLabel)
+		}
+		if value == "" {
+			continue
+		}
+		infoLabels[strcase.ToSnake(string(infoLabel))] = value
+	}
+	infoTimeSeries, err := prometheus.NewTimeSeries("brother_printer_info", infoLabels)
+	if err != nil {
+		return nil, fmt.Errorf("bad info time series: %s", err)
+	}
+	return infoTimeSeries, nil
+}
+
+func (c *Config) GetTimeSeriesGroup(values map[ColumnName]string) (*prometheus.TimeSeriesGroup, error) {
+	timeSeriesGroup := prometheus.NewTimeSeriesGroup()
+
+	infoTimeSeries, err := c.getInfoTimeSeries(values)
+	if err != nil {
+		return nil, err
+	}
+	timeSeriesGroup.Add(infoTimeSeries)
+
+	// TODO check unrefe
+
+	return timeSeriesGroup, nil
+}
+
+var ConfigMap = map[string]Config{
+	"Brother HL-L2350DW series": Config{
+		Info: []ColumnName{
+			"Node Name",
+			"Model Name",
+			"Location",
+			"Contact",
+			"IP Address",
+			"Serial No.",
+			"Main Firmware Version",
+		},
+	},
+}
+
+func ReadMaintenanceInfo(ioReader io.Reader) (*prometheus.TimeSeriesGroup, error) {
 	csvReader := csv.NewReader(ioReader)
 
 	records, err := csvReader.ReadAll()
@@ -29,28 +90,24 @@ func ReadMaintenanceInfo(ioReader io.Reader) (prometheus.TimeSeriesGroup, error)
 		return nil, fmt.Errorf("names row has %d columns and values row has %d", len(names), len(strValues))
 	}
 
-	timeSeriesGroup := prometheus.TimeSeriesGroup{}
-
+	values := map[ColumnName]string{}
 	for i, name := range names {
-		strValue := strValues[i]
+		values[ColumnName(name)] = strValues[i]
+	}
 
-		floatValue, err := strconv.ParseFloat(strValue, 64)
-		if err != nil {
-			fmt.Printf("not a float %s: %s\n", name, err)
-			continue
-		}
+	modelName, ok := values["Model Name"]
+	if !ok {
+		return nil, fmt.Errorf("'Model Name' not reported by printer")
+	}
 
-		timeSeries, err := prometheus.NewTimeSeries(
-			"brother_printer_"+strcase.ToSnake(name),
-			prometheus.Labels{},
-		)
-		if err != nil {
-			fmt.Printf("bad time series %s: %s\n", name, err)
-			continue
-		}
-		timeSeries.Set(floatValue)
+	config, ok := ConfigMap[modelName]
+	if !ok {
+		return nil, fmt.Errorf("unknown model name: %s", modelName)
+	}
 
-		timeSeriesGroup = append(timeSeriesGroup, timeSeries)
+	timeSeriesGroup, err := config.GetTimeSeriesGroup(values)
+	if err != nil {
+		return nil, err
 	}
 
 	return timeSeriesGroup, nil

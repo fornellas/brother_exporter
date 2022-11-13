@@ -11,7 +11,7 @@ import (
 )
 
 var (
-	address = kingpin.Flag("server", "server address").Default(":8034").String()
+	address = kingpin.Flag("server", "server address").Default(":8035").String()
 )
 
 func metricsHandler(w http.ResponseWriter, req *http.Request) {
