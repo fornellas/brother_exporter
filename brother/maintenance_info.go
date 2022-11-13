@@ -27,6 +27,7 @@ type Plain struct {
 	ColumnName       ColumnName
 	MetricNameSuffix string
 	ValueMapFn       ValueMapFn
+	Labels           prometheus.Labels
 }
 
 type Config struct {
@@ -130,7 +131,7 @@ func (c *Config) getPlainTimeSeries(values map[ColumnName]string) ([]*prometheus
 
 		timeSeries, err := prometheus.NewTimeSeries(
 			fmt.Sprintf("brother_printer_%s", plain.MetricNameSuffix),
-			prometheus.Labels{},
+			plain.Labels,
 		)
 		if err != nil {
 			return nil, err
@@ -210,13 +211,6 @@ var ConfigMap = map[string]Config{
 				LabelName: "paper_type",
 			},
 			GroupToLabels{
-				MetricNameSuffix: "pages_printed_total",
-				ColumnNameToLabelValueRegexp: regexp.MustCompile(
-					"^(Print|Print 2-sided Print|Others|Others 2-sided Print)$",
-				),
-				LabelName: "type",
-			},
-			GroupToLabels{
 				MetricNameSuffix:             "part_replace_total",
 				ColumnNameToLabelValueRegexp: regexp.MustCompile(`^Replace Count\((.+)\)$`),
 				LabelName:                    "part",
@@ -235,6 +229,34 @@ var ConfigMap = map[string]Config{
 			},
 		},
 		Plains: []Plain{
+			Plain{
+				ColumnName:       ColumnName("Print"),
+				MetricNameSuffix: "pages_printed_total",
+				Labels: prometheus.Labels{
+					"type": "print",
+				},
+			},
+			Plain{
+				ColumnName:       ColumnName("Print 2-sided Print"),
+				MetricNameSuffix: "duplex_pages_printed_total",
+				Labels: prometheus.Labels{
+					"type": "print",
+				},
+			},
+			Plain{
+				ColumnName:       ColumnName("Others"),
+				MetricNameSuffix: "pages_printed_total",
+				Labels: prometheus.Labels{
+					"type": "others",
+				},
+			},
+			Plain{
+				ColumnName:       ColumnName("Others 2-sided Print"),
+				MetricNameSuffix: "duplex_pages_printed_total",
+				Labels: prometheus.Labels{
+					"type": "others",
+				},
+			},
 			Plain{
 				ColumnName:       ColumnName("Average Coverage"),
 				MetricNameSuffix: "average_coverage_ratio",
