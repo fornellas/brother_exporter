@@ -16,9 +16,8 @@ type ColumnName string
 
 type GroupToLabels struct {
 	MetricNameSuffix string
-	ColumnNames      []ColumnName
+	ColumnNameRegexp *regexp.Regexp
 	LabelName        string
-	LabelValueMapFn  func(ColumnName) (string, error)
 	ValueMapFn       func(string) (float64, error)
 }
 
@@ -49,17 +48,17 @@ func (c *Config) getInfoTimeSeries(values map[ColumnName]string) (*prometheus.Ti
 func (c *Config) getGroupedTimeSeries(values map[ColumnName]string) ([]*prometheus.TimeSeries, error) {
 	timeSeriesSlice := []*prometheus.TimeSeries{}
 	for _, groupToLabels := range c.GroupToLabels {
-		for _, columnName := range groupToLabels.ColumnNames {
+		for columnName := range values {
 			var err error
 
-			labelValue := string(columnName)
-			if groupToLabels.LabelValueMapFn != nil {
-				var err error
-				labelValue, err = groupToLabels.LabelValueMapFn(columnName)
-				if err != nil {
-					return nil, err
-				}
+			matches := groupToLabels.ColumnNameRegexp.FindAllStringSubmatch(string(columnName), -1)
+			if len(matches) != 1 {
+				continue
 			}
+			if len(matches[0]) != 2 {
+				continue
+			}
+			labelValue := matches[0][1]
 
 			timeSeries, err := prometheus.NewTimeSeries(
 				fmt.Sprintf("brother_printer_%s", groupToLabels.MetricNameSuffix),
@@ -129,19 +128,8 @@ var ConfigMap = map[string]Config{
 		GroupToLabels: []GroupToLabels{
 			GroupToLabels{
 				MetricNameSuffix: "part_remaining_life_ratio",
-				ColumnNames: []ColumnName{
-					`% of Life Remaining(Drum Unit)`,
-					`% of Life Remaining(Toner)`,
-				},
-				LabelName: "part",
-				LabelValueMapFn: func(columnName ColumnName) (string, error) {
-					partRegexp := regexp.MustCompile(`^% of Life Remaining\((.+)\)$`)
-					matches := partRegexp.FindAllStringSubmatch(string(columnName), -1)
-					if len(matches) != 1 {
-						return "", fmt.Errorf("%q: does not match %q", columnName, partRegexp)
-					}
-					return matches[0][1], nil
-				},
+				ColumnNameRegexp: regexp.MustCompile(`^% of Life Remaining\((.+)\)$`),
+				LabelName:        "part",
 				ValueMapFn: func(valueStr string) (float64, error) {
 					value, err := strconv.ParseFloat(valueStr, 64)
 					if err != nil {
@@ -152,31 +140,15 @@ var ConfigMap = map[string]Config{
 			},
 			GroupToLabels{
 				MetricNameSuffix: "pages_printed_by_paper_size_total",
-				ColumnNames: []ColumnName{
-					"A4/Letter",
-					"Legal/Folio",
-					"B5/Executive",
-					"Envelopes",
-					"A5",
-					"Others",
-				},
+				ColumnNameRegexp: regexp.MustCompile(
+					"^(A4/Letter|Legal/Folio|B5/Executive|Envelopes|A5|Others)$",
+				),
 				LabelName: "paper_size",
 			},
 			GroupToLabels{
 				MetricNameSuffix: "part_replace_total",
-				ColumnNames: []ColumnName{
-					"Replace Count(Toner)",
-					"Replace Count(Drum Unit)",
-				},
-				LabelName: "part",
-				LabelValueMapFn: func(columnName ColumnName) (string, error) {
-					partRegexp := regexp.MustCompile(`^Replace Count\((.+)\)$`)
-					matches := partRegexp.FindAllStringSubmatch(string(columnName), -1)
-					if len(matches) != 1 {
-						return "", fmt.Errorf("%q: does not match %q", columnName, partRegexp)
-					}
-					return matches[0][1], nil
-				},
+				ColumnNameRegexp: regexp.MustCompile(`^Replace Count\((.+)\)$`),
+				LabelName:        "part",
 			},
 		},
 	},
