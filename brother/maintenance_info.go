@@ -4,6 +4,8 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
+	"regexp"
+	"strconv"
 
 	"github.com/iancoleman/strcase"
 
@@ -12,16 +14,17 @@ import (
 
 type ColumnName string
 
-type TimeSeriesLabels struct {
+type GroupToLabels struct {
 	MetricNameSuffix string
 	ColumnNames      []ColumnName
 	LabelName        string
-	MapFn            func(ColumnName) (string, error)
+	LabelValueMapFn  func(ColumnName) (string, error)
+	ValueMapFn       func(string) (float64, error)
 }
 
 type Config struct {
-	Info             []ColumnName
-	TimeSeriesLabels map[string]map[ColumnName]string
+	Info          []ColumnName
+	GroupToLabels []GroupToLabels
 }
 
 func (c *Config) getInfoTimeSeries(values map[ColumnName]string) (*prometheus.TimeSeries, error) {
@@ -42,6 +45,40 @@ func (c *Config) getInfoTimeSeries(values map[ColumnName]string) (*prometheus.Ti
 	}
 	return infoTimeSeries, nil
 }
+func (c *Config) getGroupedTimeSeries(values map[ColumnName]string) ([]*prometheus.TimeSeries, error) {
+	timeSeriesSlice := []*prometheus.TimeSeries{}
+	for _, groupToLabels := range c.GroupToLabels {
+		for _, columnName := range groupToLabels.ColumnNames {
+			labelValue, err := groupToLabels.LabelValueMapFn(columnName)
+			if err != nil {
+				return nil, err
+			}
+
+			timeSeries, err := prometheus.NewTimeSeries(
+				fmt.Sprintf("brother_printer_%s", groupToLabels.MetricNameSuffix),
+				prometheus.Labels{
+					groupToLabels.LabelName: labelValue,
+				},
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			rawValue, ok := values[columnName]
+			if !ok {
+				return nil, fmt.Errorf("%s: column does not exist", columnName)
+			}
+
+			value, err := groupToLabels.ValueMapFn(rawValue)
+			if err != nil {
+				return nil, err
+			}
+			timeSeries.Set(value)
+			timeSeriesSlice = append(timeSeriesSlice, timeSeries)
+		}
+	}
+	return timeSeriesSlice, nil
+}
 
 func (c *Config) GetTimeSeriesGroup(values map[ColumnName]string) (*prometheus.TimeSeriesGroup, error) {
 	timeSeriesGroup := prometheus.NewTimeSeriesGroup()
@@ -52,7 +89,13 @@ func (c *Config) GetTimeSeriesGroup(values map[ColumnName]string) (*prometheus.T
 	}
 	timeSeriesGroup.Add(infoTimeSeries)
 
-	// TODO check unrefe
+	groupedTimeSeries, err := c.getGroupedTimeSeries(values)
+	if err != nil {
+		return nil, err
+	}
+	timeSeriesGroup.Add(groupedTimeSeries...)
+
+	// TODO check not referred column names
 
 	return timeSeriesGroup, nil
 }
@@ -67,6 +110,31 @@ var ConfigMap = map[string]Config{
 			"IP Address",
 			"Serial No.",
 			"Main Firmware Version",
+		},
+		GroupToLabels: []GroupToLabels{
+			GroupToLabels{
+				MetricNameSuffix: "remaining_life_ratio",
+				ColumnNames: []ColumnName{
+					`% of Life Remaining(Drum Unit)`,
+					`% of Life Remaining(Toner)`,
+				},
+				LabelName: "part",
+				LabelValueMapFn: func(columnName ColumnName) (string, error) {
+					partRegexp := regexp.MustCompile(`^% of Life Remaining\((.+)\)$`)
+					matches := partRegexp.FindAllStringSubmatch(string(columnName), -1)
+					if len(matches) != 1 {
+						return "", fmt.Errorf("%q: does not match %q", columnName, partRegexp)
+					}
+					return matches[0][1], nil
+				},
+				ValueMapFn: func(valueStr string) (float64, error) {
+					value, err := strconv.ParseFloat(valueStr, 64)
+					if err != nil {
+						return 0, err
+					}
+					return value / 100, nil
+				},
+			},
 		},
 	},
 }

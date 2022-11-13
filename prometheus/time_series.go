@@ -85,8 +85,8 @@ func NewTimeSeriesGroup() *TimeSeriesGroup {
 	}
 }
 
-func (tsg *TimeSeriesGroup) Add(ts *TimeSeries) {
-	tsg.timeSeriesSlice = append(tsg.timeSeriesSlice, ts)
+func (tsg *TimeSeriesGroup) Add(ts ...*TimeSeries) {
+	tsg.timeSeriesSlice = append(tsg.timeSeriesSlice, ts...)
 }
 
 func (tsg TimeSeriesGroup) String() string {
