@@ -12,17 +12,34 @@ import (
 	"github.com/fornellas/brother_exporter/prometheus"
 )
 
-type ColumnName string
-
 type ColumnNumber int
 
-type Value struct {
-	Str          string
+type ColumnName string
+
+type Entry struct {
 	ColumnNumber ColumnNumber
+	ColumnName   ColumnName
+	Value        string
 }
 
-func (v Value) String() string {
-	return v.Str
+type Entries []Entry
+
+func (entries Entries) Get(columnName ColumnName) (*Entry, bool, error) {
+	found := false
+	var retEntry Entry
+	for _, entry := range entries {
+		if entry.ColumnName == columnName {
+			if found {
+				return nil, false, fmt.Errorf("column %q not unique", columnName)
+			}
+			found = true
+			retEntry = entry
+		}
+	}
+	if !found {
+		return nil, false, nil
+	}
+	return &retEntry, true, nil
 }
 
 type ValueMapFn func(string) (float64, error)
@@ -41,6 +58,8 @@ type Plain struct {
 	MetricNameSuffix string
 	ValueMapFn       ValueMapFn
 	Labels           prometheus.Labels
+	MinColumn        ColumnNumber
+	MaxColumn        ColumnNumber
 }
 
 type Config struct {
@@ -50,20 +69,26 @@ type Config struct {
 	Ignore        []ColumnName
 }
 
-func (c *Config) getInfoTimeSeries(values map[ColumnName]Value) ([]*prometheus.TimeSeries, []ColumnNumber, error) {
+func (c *Config) getInfoTimeSeries(entries Entries) ([]*prometheus.TimeSeries, []ColumnNumber, error) {
 	infoLabels := prometheus.Labels{}
 	processedColumnNumbers := []ColumnNumber{}
 
 	for _, infoLabel := range c.Info {
-		value, ok := values[infoLabel]
+		entry, ok, err := entries.Get(infoLabel)
+		if err != nil {
+			return nil, nil, err
+		}
 		if !ok {
 			return nil, nil, fmt.Errorf("missing '%s'", infoLabel)
 		}
-		processedColumnNumbers = append(processedColumnNumbers, value.ColumnNumber)
-		if value.String() == "" {
+
+		processedColumnNumbers = append(processedColumnNumbers, entry.ColumnNumber)
+
+		if entry.Value == "" {
 			continue
 		}
-		infoLabels[strcase.ToSnake(string(infoLabel))] = value.String()
+
+		infoLabels[strcase.ToSnake(string(infoLabel))] = entry.Value
 	}
 
 	infoTimeSeries, err := prometheus.NewTimeSeries("brother_printer_info", infoLabels)
@@ -73,40 +98,40 @@ func (c *Config) getInfoTimeSeries(values map[ColumnName]Value) ([]*prometheus.T
 	return []*prometheus.TimeSeries{infoTimeSeries}, processedColumnNumbers, nil
 }
 
-func (c *Config) getGroupedTimeSeries(values map[ColumnName]Value) ([]*prometheus.TimeSeries, []ColumnNumber, error) {
+func (c *Config) getGroupedTimeSeries(entries Entries) ([]*prometheus.TimeSeries, []ColumnNumber, error) {
 	timeSeriesSlice := []*prometheus.TimeSeries{}
 	processedColumnNumbers := []ColumnNumber{}
 
 	for _, groupToLabels := range c.GroupToLabels {
-		for columnName, value := range values {
+		for _, entry := range entries {
 			var err error
 
-			if groupToLabels.MinColumn != 0 && value.ColumnNumber < groupToLabels.MinColumn {
+			if groupToLabels.MinColumn != 0 && entry.ColumnNumber < groupToLabels.MinColumn {
 				continue
 			}
-			if groupToLabels.MaxColumn != 0 && value.ColumnNumber > groupToLabels.MaxColumn {
+			if groupToLabels.MaxColumn != 0 && entry.ColumnNumber > groupToLabels.MaxColumn {
 				continue
 			}
 
-			matches := groupToLabels.ColumnNameToLabelValueRegexp.FindAllStringSubmatch(string(columnName), -1)
+			matches := groupToLabels.ColumnNameToLabelValueRegexp.FindAllStringSubmatch(string(entry.ColumnName), -1)
 			if len(matches) != 1 {
 				continue
 			}
 			if len(matches[0]) != 2 {
 				continue
 			}
-			processedColumnNumbers = append(processedColumnNumbers, value.ColumnNumber)
+			processedColumnNumbers = append(processedColumnNumbers, entry.ColumnNumber)
 
 			labelValue := matches[0][1]
 
 			var floatValue float64
 			if groupToLabels.ValueMapFn != nil {
-				floatValue, err = groupToLabels.ValueMapFn(value.String())
+				floatValue, err = groupToLabels.ValueMapFn(entry.Value)
 				if err != nil {
 					return nil, nil, err
 				}
 			} else {
-				floatValue, err = strconv.ParseFloat(value.String(), 64)
+				floatValue, err = strconv.ParseFloat(entry.Value, 64)
 				if err != nil {
 					return nil, nil, err
 				}
@@ -129,55 +154,71 @@ func (c *Config) getGroupedTimeSeries(values map[ColumnName]Value) ([]*prometheu
 	return timeSeriesSlice, processedColumnNumbers, nil
 }
 
-func (c *Config) getPlainTimeSeries(values map[ColumnName]Value) ([]*prometheus.TimeSeries, []ColumnNumber, error) {
+func (c *Config) getPlainTimeSeries(entries Entries) ([]*prometheus.TimeSeries, []ColumnNumber, error) {
 	timeSeriesSlice := []*prometheus.TimeSeries{}
 	processedColumnNumbers := []ColumnNumber{}
 
 	for _, plain := range c.Plains {
-		value, ok := values[plain.ColumnName]
-		if !ok {
+		found := false
+		for _, entry := range entries {
+			if entry.ColumnName != plain.ColumnName {
+				continue
+			}
+
+			if plain.MinColumn != 0 && entry.ColumnNumber < plain.MinColumn {
+				continue
+			}
+			if plain.MaxColumn != 0 && entry.ColumnNumber > plain.MaxColumn {
+				continue
+			}
+
+			found = true
+			processedColumnNumbers = append(processedColumnNumbers, entry.ColumnNumber)
+
+			var floatValue float64
+			var err error
+			if plain.ValueMapFn != nil {
+				floatValue, err = plain.ValueMapFn(entry.Value)
+				if err != nil {
+					return nil, nil, err
+				}
+			} else {
+				floatValue, err = strconv.ParseFloat(entry.Value, 64)
+				if err != nil {
+					return nil, nil, err
+				}
+			}
+
+			timeSeries, err := prometheus.NewTimeSeries(
+				fmt.Sprintf("brother_printer_%s", plain.MetricNameSuffix),
+				plain.Labels,
+			)
+			if err != nil {
+				return nil, nil, err
+			}
+			timeSeries.Set(floatValue)
+			timeSeriesSlice = append(timeSeriesSlice, timeSeries)
+			break
+		}
+
+		if !found {
 			return nil, nil, fmt.Errorf("Column %q not found", plain.ColumnName)
 		}
-		processedColumnNumbers = append(processedColumnNumbers, value.ColumnNumber)
-
-		var floatValue float64
-		var err error
-		if plain.ValueMapFn != nil {
-			floatValue, err = plain.ValueMapFn(value.String())
-			if err != nil {
-				return nil, nil, err
-			}
-		} else {
-			floatValue, err = strconv.ParseFloat(value.String(), 64)
-			if err != nil {
-				return nil, nil, err
-			}
-		}
-
-		timeSeries, err := prometheus.NewTimeSeries(
-			fmt.Sprintf("brother_printer_%s", plain.MetricNameSuffix),
-			plain.Labels,
-		)
-		if err != nil {
-			return nil, nil, err
-		}
-		timeSeries.Set(floatValue)
-		timeSeriesSlice = append(timeSeriesSlice, timeSeries)
 	}
 
 	return timeSeriesSlice, processedColumnNumbers, nil
 }
 
-func (c *Config) GetTimeSeriesGroup(values map[ColumnName]Value) (*prometheus.TimeSeriesGroup, error) {
+func (c *Config) GetTimeSeriesGroup(entries Entries) (*prometheus.TimeSeriesGroup, error) {
 	timeSeriesGroup := prometheus.NewTimeSeriesGroup()
 	processedColumnNumbers := []ColumnNumber{}
 
-	for _, fn := range []func(values map[ColumnName]Value) ([]*prometheus.TimeSeries, []ColumnNumber, error){
+	for _, fn := range []func(Entries) ([]*prometheus.TimeSeries, []ColumnNumber, error){
 		c.getInfoTimeSeries,
 		c.getGroupedTimeSeries,
 		c.getPlainTimeSeries,
 	} {
-		infoTimeSeries, columnNumbers, err := fn(values)
+		infoTimeSeries, columnNumbers, err := fn(entries)
 		if err != nil {
 			return nil, err
 		}
@@ -192,22 +233,22 @@ func (c *Config) GetTimeSeriesGroup(values map[ColumnName]Value) (*prometheus.Ti
 		processedColumnNumbers = append(processedColumnNumbers, columnNumbers...)
 	}
 
-	for columnName, value := range values {
+	for _, entry := range entries {
 		found := false
 		for _, processedColumnNumber := range processedColumnNumbers {
-			if processedColumnNumber == value.ColumnNumber {
+			if processedColumnNumber == entry.ColumnNumber {
 				found = true
 				break
 			}
 		}
 		for _, ignoreColumnName := range c.Ignore {
-			if ignoreColumnName == columnName {
+			if ignoreColumnName == entry.ColumnName {
 				found = true
 				break
 			}
 		}
 		if !found {
-			return nil, fmt.Errorf("Unprocessed column %q=%q", columnName, value)
+			return nil, fmt.Errorf("Unprocessed column %q=%q", entry.ColumnName, entry.Value)
 		}
 	}
 
@@ -296,6 +337,8 @@ var ConfigMap = map[string]Config{
 				Labels: prometheus.Labels{
 					"type": "others",
 				},
+				MinColumn: 23,
+				MaxColumn: 28,
 			},
 			Plain{
 				ColumnName:       ColumnName("Others 2-sided Print"),
@@ -338,25 +381,32 @@ func ReadMaintenanceInfo(ioReader io.Reader) (*prometheus.TimeSeriesGroup, error
 		return nil, fmt.Errorf("names row has %d columns and values row has %d", len(names), len(strValues))
 	}
 
-	values := map[ColumnName]Value{}
+	var entries Entries
 	for i, name := range names {
 		if name == "" {
 			continue
 		}
-		values[ColumnName(name)] = Value{strValues[i], ColumnNumber(i)}
+		entries = append(entries, Entry{
+			ColumnNumber: ColumnNumber(i),
+			ColumnName:   ColumnName(name),
+			Value:        strValues[i],
+		})
 	}
 
-	modelName, ok := values["Model Name"]
+	modelEntry, ok, err := entries.Get("Model Name")
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
-		return nil, fmt.Errorf("'Model Name' not reported by printer")
+		return nil, fmt.Errorf("missing Model name")
 	}
 
-	config, ok := ConfigMap[string(modelName.String())]
+	config, ok := ConfigMap[modelEntry.Value]
 	if !ok {
-		return nil, fmt.Errorf("unknown model name: %s", modelName)
+		return nil, fmt.Errorf("unknown model name: %s", modelEntry.Value)
 	}
 
-	timeSeriesGroup, err := config.GetTimeSeriesGroup(values)
+	timeSeriesGroup, err := config.GetTimeSeriesGroup(entries)
 	if err != nil {
 		return nil, err
 	}
