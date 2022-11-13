@@ -45,13 +45,20 @@ func (c *Config) getInfoTimeSeries(values map[ColumnName]string) (*prometheus.Ti
 	}
 	return infoTimeSeries, nil
 }
+
 func (c *Config) getGroupedTimeSeries(values map[ColumnName]string) ([]*prometheus.TimeSeries, error) {
 	timeSeriesSlice := []*prometheus.TimeSeries{}
 	for _, groupToLabels := range c.GroupToLabels {
 		for _, columnName := range groupToLabels.ColumnNames {
-			labelValue, err := groupToLabels.LabelValueMapFn(columnName)
-			if err != nil {
-				return nil, err
+			var err error
+
+			labelValue := string(columnName)
+			if groupToLabels.LabelValueMapFn != nil {
+				var err error
+				labelValue, err = groupToLabels.LabelValueMapFn(columnName)
+				if err != nil {
+					return nil, err
+				}
 			}
 
 			timeSeries, err := prometheus.NewTimeSeries(
@@ -69,9 +76,17 @@ func (c *Config) getGroupedTimeSeries(values map[ColumnName]string) ([]*promethe
 				return nil, fmt.Errorf("%s: column does not exist", columnName)
 			}
 
-			value, err := groupToLabels.ValueMapFn(rawValue)
-			if err != nil {
-				return nil, err
+			var value float64
+			if groupToLabels.ValueMapFn != nil {
+				value, err = groupToLabels.ValueMapFn(rawValue)
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				value, err = strconv.ParseFloat(rawValue, 64)
+				if err != nil {
+					return nil, err
+				}
 			}
 			timeSeries.Set(value)
 			timeSeriesSlice = append(timeSeriesSlice, timeSeries)
@@ -113,7 +128,7 @@ var ConfigMap = map[string]Config{
 		},
 		GroupToLabels: []GroupToLabels{
 			GroupToLabels{
-				MetricNameSuffix: "remaining_life_ratio",
+				MetricNameSuffix: "part_remaining_life_ratio",
 				ColumnNames: []ColumnName{
 					`% of Life Remaining(Drum Unit)`,
 					`% of Life Remaining(Toner)`,
@@ -133,6 +148,34 @@ var ConfigMap = map[string]Config{
 						return 0, err
 					}
 					return value / 100, nil
+				},
+			},
+			GroupToLabels{
+				MetricNameSuffix: "pages_printed_by_paper_size_total",
+				ColumnNames: []ColumnName{
+					"A4/Letter",
+					"Legal/Folio",
+					"B5/Executive",
+					"Envelopes",
+					"A5",
+					"Others",
+				},
+				LabelName: "paper_size",
+			},
+			GroupToLabels{
+				MetricNameSuffix: "part_replace_total",
+				ColumnNames: []ColumnName{
+					"Replace Count(Toner)",
+					"Replace Count(Drum Unit)",
+				},
+				LabelName: "part",
+				LabelValueMapFn: func(columnName ColumnName) (string, error) {
+					partRegexp := regexp.MustCompile(`^Replace Count\((.+)\)$`)
+					matches := partRegexp.FindAllStringSubmatch(string(columnName), -1)
+					if len(matches) != 1 {
+						return "", fmt.Errorf("%q: does not match %q", columnName, partRegexp)
+					}
+					return matches[0][1], nil
 				},
 			},
 		},
