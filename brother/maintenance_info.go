@@ -14,16 +14,25 @@ import (
 
 type ColumnName string
 
+type ValueMapFn func(string) (float64, error)
+
 type GroupToLabels struct {
+	MetricNameSuffix             string
+	ColumnNameToLabelValueRegexp *regexp.Regexp
+	LabelName                    string
+	ValueMapFn                   ValueMapFn
+}
+
+type Plain struct {
+	ColumnName       ColumnName
 	MetricNameSuffix string
-	ColumnNameRegexp *regexp.Regexp
-	LabelName        string
-	ValueMapFn       func(string) (float64, error)
+	ValueMapFn       ValueMapFn
 }
 
 type Config struct {
 	Info          []ColumnName
 	GroupToLabels []GroupToLabels
+	Plains        []Plain
 }
 
 func (c *Config) getInfoTimeSeries(values map[ColumnName]string) (*prometheus.TimeSeries, error) {
@@ -47,11 +56,12 @@ func (c *Config) getInfoTimeSeries(values map[ColumnName]string) (*prometheus.Ti
 
 func (c *Config) getGroupedTimeSeries(values map[ColumnName]string) ([]*prometheus.TimeSeries, error) {
 	timeSeriesSlice := []*prometheus.TimeSeries{}
+
 	for _, groupToLabels := range c.GroupToLabels {
 		for columnName := range values {
 			var err error
 
-			matches := groupToLabels.ColumnNameRegexp.FindAllStringSubmatch(string(columnName), -1)
+			matches := groupToLabels.ColumnNameToLabelValueRegexp.FindAllStringSubmatch(string(columnName), -1)
 			if len(matches) != 1 {
 				continue
 			}
@@ -59,16 +69,6 @@ func (c *Config) getGroupedTimeSeries(values map[ColumnName]string) ([]*promethe
 				continue
 			}
 			labelValue := matches[0][1]
-
-			timeSeries, err := prometheus.NewTimeSeries(
-				fmt.Sprintf("brother_printer_%s", groupToLabels.MetricNameSuffix),
-				prometheus.Labels{
-					groupToLabels.LabelName: labelValue,
-				},
-			)
-			if err != nil {
-				return nil, err
-			}
 
 			rawValue, ok := values[columnName]
 			if !ok {
@@ -87,10 +87,58 @@ func (c *Config) getGroupedTimeSeries(values map[ColumnName]string) ([]*promethe
 					return nil, err
 				}
 			}
+
+			timeSeries, err := prometheus.NewTimeSeries(
+				fmt.Sprintf("brother_printer_%s", groupToLabels.MetricNameSuffix),
+				prometheus.Labels{
+					groupToLabels.LabelName: labelValue,
+				},
+			)
+			if err != nil {
+				return nil, err
+			}
 			timeSeries.Set(value)
 			timeSeriesSlice = append(timeSeriesSlice, timeSeries)
 		}
 	}
+
+	return timeSeriesSlice, nil
+}
+
+func (c *Config) getPlainTimeSeries(values map[ColumnName]string) ([]*prometheus.TimeSeries, error) {
+	timeSeriesSlice := []*prometheus.TimeSeries{}
+
+	for _, plain := range c.Plains {
+		rawValue, ok := values[plain.ColumnName]
+		if !ok {
+			return nil, fmt.Errorf("Column %q not found", plain.ColumnName)
+		}
+
+		var value float64
+		var err error
+		if plain.ValueMapFn != nil {
+			value, err = plain.ValueMapFn(rawValue)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			value, err = strconv.ParseFloat(rawValue, 64)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		timeSeries, err := prometheus.NewTimeSeries(
+			fmt.Sprintf("brother_printer_%s", plain.MetricNameSuffix),
+			prometheus.Labels{},
+		)
+		if err != nil {
+			return nil, err
+		}
+		timeSeries.Set(value)
+		timeSeriesSlice = append(timeSeriesSlice, timeSeries)
+	}
+
 	return timeSeriesSlice, nil
 }
 
@@ -109,9 +157,23 @@ func (c *Config) GetTimeSeriesGroup(values map[ColumnName]string) (*prometheus.T
 	}
 	timeSeriesGroup.Add(groupedTimeSeries...)
 
+	plainTimeSeries, err := c.getPlainTimeSeries(values)
+	if err != nil {
+		return nil, err
+	}
+	timeSeriesGroup.Add(plainTimeSeries...)
+
 	// TODO check not referred column names
 
 	return timeSeriesGroup, nil
+}
+
+func divideBy100(valueStr string) (float64, error) {
+	value, err := strconv.ParseFloat(valueStr, 64)
+	if err != nil {
+		return 0, err
+	}
+	return value / 100, nil
 }
 
 var ConfigMap = map[string]Config{
@@ -124,31 +186,59 @@ var ConfigMap = map[string]Config{
 			"IP Address",
 			"Serial No.",
 			"Main Firmware Version",
+			"Memory Size",
 		},
 		GroupToLabels: []GroupToLabels{
 			GroupToLabels{
-				MetricNameSuffix: "part_remaining_life_ratio",
-				ColumnNameRegexp: regexp.MustCompile(`^% of Life Remaining\((.+)\)$`),
-				LabelName:        "part",
-				ValueMapFn: func(valueStr string) (float64, error) {
-					value, err := strconv.ParseFloat(valueStr, 64)
-					if err != nil {
-						return 0, err
-					}
-					return value / 100, nil
-				},
+				MetricNameSuffix:             "part_remaining_life_ratio",
+				ColumnNameToLabelValueRegexp: regexp.MustCompile(`^% of Life Remaining\((.+)\)$`),
+				LabelName:                    "part",
+				ValueMapFn:                   divideBy100,
 			},
 			GroupToLabels{
 				MetricNameSuffix: "pages_printed_by_paper_size_total",
-				ColumnNameRegexp: regexp.MustCompile(
+				ColumnNameToLabelValueRegexp: regexp.MustCompile(
 					"^(A4/Letter|Legal/Folio|B5/Executive|Envelopes|A5|Others)$",
 				),
 				LabelName: "paper_size",
 			},
 			GroupToLabels{
-				MetricNameSuffix: "part_replace_total",
-				ColumnNameRegexp: regexp.MustCompile(`^Replace Count\((.+)\)$`),
-				LabelName:        "part",
+				MetricNameSuffix: "pages_printed_by_paper_type_total",
+				ColumnNameToLabelValueRegexp: regexp.MustCompile(
+					"^(Plain/Thin/Recycled|Thick/Thicker/Bond|Envelopes/Env. Thick/Env. Thin|Label|Hagaki)$",
+				),
+				LabelName: "paper_type",
+			},
+			GroupToLabels{
+				MetricNameSuffix: "pages_printed_total",
+				ColumnNameToLabelValueRegexp: regexp.MustCompile(
+					"^(Print|Print 2-sided Print|Others|Others 2-sided Print)$",
+				),
+				LabelName: "type",
+			},
+			GroupToLabels{
+				MetricNameSuffix:             "part_replace_total",
+				ColumnNameToLabelValueRegexp: regexp.MustCompile(`^Replace Count\((.+)\)$`),
+				LabelName:                    "part",
+			},
+			GroupToLabels{
+				MetricNameSuffix: "paper_jam_total",
+				ColumnNameToLabelValueRegexp: regexp.MustCompile(
+					"^(Jam Tray 1|Jam Inside|Jam Rear|Jam 2-sided)$",
+				),
+				LabelName: "location",
+			},
+			GroupToLabels{
+				MetricNameSuffix:             "errors_total",
+				ColumnNameToLabelValueRegexp: regexp.MustCompile(`^Error Count ([0-9]+)$`),
+				LabelName:                    "number",
+			},
+		},
+		Plains: []Plain{
+			Plain{
+				ColumnName:       ColumnName("Average Coverage"),
+				MetricNameSuffix: "average_coverage_ratio",
+				ValueMapFn:       divideBy100,
 			},
 		},
 	},
