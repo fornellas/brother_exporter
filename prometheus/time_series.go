@@ -90,9 +90,10 @@ func (tsg *TimeSeriesGroup) Add(ts ...*TimeSeries) {
 }
 
 func (tsg TimeSeriesGroup) String() string {
-	str := ""
+	strSlice := []string{}
 	for _, ts := range tsg.timeSeriesSlice {
-		str += ts.String() + "\n"
+		strSlice = append(strSlice, ts.String())
 	}
-	return str
+	sort.Strings(strSlice)
+	return strings.Join(strSlice, "\n")
 }
