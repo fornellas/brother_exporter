@@ -24,13 +24,31 @@ type Entry struct {
 
 type Entries []Entry
 
-func (entries Entries) Get(columnName ColumnName) (*Entry, bool, error) {
+func (entries Entries) GetByColumnName(columnName ColumnName) (*Entry, bool, error) {
 	found := false
 	var retEntry Entry
 	for _, entry := range entries {
 		if entry.ColumnName == columnName {
 			if found {
 				return nil, false, fmt.Errorf("column %q not unique", columnName)
+			}
+			found = true
+			retEntry = entry
+		}
+	}
+	if !found {
+		return nil, false, nil
+	}
+	return &retEntry, true, nil
+}
+
+func (entries Entries) GetByColumnNumber(columnNumber ColumnNumber) (*Entry, bool, error) {
+	found := false
+	var retEntry Entry
+	for _, entry := range entries {
+		if entry.ColumnNumber == columnNumber {
+			if found {
+				return nil, false, fmt.Errorf("column %q not unique", columnNumber)
 			}
 			found = true
 			retEntry = entry
@@ -62,6 +80,8 @@ type Plain struct {
 	MaxColumn        ColumnNumber
 }
 
+var errorInfoRegexp = regexp.MustCompile(`^Error([0-9]+)$`)
+
 type Config struct {
 	Info          []ColumnName
 	GroupToLabels []GroupToLabels
@@ -74,7 +94,7 @@ func (c *Config) getInfoTimeSeries(entries Entries) ([]*prometheus.TimeSeries, [
 	processedColumnNumbers := []ColumnNumber{}
 
 	for _, infoLabel := range c.Info {
-		entry, ok, err := entries.Get(infoLabel)
+		entry, ok, err := entries.GetByColumnName(infoLabel)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -210,6 +230,40 @@ func (c *Config) getPlainTimeSeries(entries Entries) ([]*prometheus.TimeSeries, 
 	return timeSeriesSlice, processedColumnNumbers, nil
 }
 
+func getErrorInfoTimeSeries(entries Entries) ([]*prometheus.TimeSeries, []ColumnNumber, error) {
+	errorInfoTimeSeriesSlice := []*prometheus.TimeSeries{}
+	processedColumnNumbers := []ColumnNumber{}
+
+	for _, entry := range entries {
+		matches := errorInfoRegexp.FindAllStringSubmatch(string(entry.ColumnName), -1)
+		if len(matches) != 1 {
+			continue
+		}
+		if len(matches[0]) != 2 {
+			continue
+		}
+		processedColumnNumbers = append(processedColumnNumbers, entry.ColumnNumber)
+
+		errorInfoLabels := prometheus.Labels{}
+		errorInfoLabels["number"] = matches[0][1]
+		errorInfoLabels["description"] = entry.Value
+
+		if errorInfoLabels["description"] == "" {
+			continue
+		}
+
+		errorInfoTimeSeries, err := prometheus.NewTimeSeries("brother_printer_error_info", errorInfoLabels)
+		if err != nil {
+			return nil, nil, fmt.Errorf("bad error info time series: %s", err)
+		}
+		errorInfoTimeSeries.Set(1.0)
+
+		errorInfoTimeSeriesSlice = append(errorInfoTimeSeriesSlice, errorInfoTimeSeries)
+	}
+
+	return errorInfoTimeSeriesSlice, processedColumnNumbers, nil
+}
+
 func (c *Config) GetTimeSeriesGroup(entries Entries) (*prometheus.TimeSeriesGroup, error) {
 	timeSeriesGroup := prometheus.NewTimeSeriesGroup()
 	processedColumnNumbers := []ColumnNumber{}
@@ -218,6 +272,7 @@ func (c *Config) GetTimeSeriesGroup(entries Entries) (*prometheus.TimeSeriesGrou
 		c.getInfoTimeSeries,
 		c.getGroupedTimeSeries,
 		c.getPlainTimeSeries,
+		getErrorInfoTimeSeries,
 	} {
 		infoTimeSeries, columnNumbers, err := fn(entries)
 		if err != nil {
@@ -227,7 +282,14 @@ func (c *Config) GetTimeSeriesGroup(entries Entries) (*prometheus.TimeSeriesGrou
 		for _, columnNumber := range columnNumbers {
 			for _, processedColumnNumber := range processedColumnNumbers {
 				if columnNumber == processedColumnNumber {
-					return nil, fmt.Errorf("Column %d used twice", columnNumber)
+					entry, ok, err := entries.GetByColumnNumber(columnNumber)
+					if err != nil {
+						return nil, err
+					}
+					if !ok {
+						return nil, fmt.Errorf("missing column %d", columnNumber)
+					}
+					return nil, fmt.Errorf("Column %s (%d) used twice", entry.ColumnName, columnNumber)
 				}
 			}
 		}
@@ -394,7 +456,7 @@ func ReadMaintenanceInfo(ioReader io.Reader) (*prometheus.TimeSeriesGroup, error
 		})
 	}
 
-	modelEntry, ok, err := entries.Get("Model Name")
+	modelEntry, ok, err := entries.GetByColumnName("Model Name")
 	if err != nil {
 		return nil, err
 	}
