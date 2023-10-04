@@ -29,7 +29,7 @@ brother_printer_errors_total{number="6"} 0E+00
 brother_printer_errors_total{number="7"} 0E+00
 brother_printer_errors_total{number="8"} 0E+00
 brother_printer_errors_total{number="9"} 0E+00
-brother_printer_info{ip_address="192.168.0.100",main_firmware_version="1.70",memory_size="64",model_name="Brother HL-L2350DW series",node_name="BRW4CD5775E3B3B",serial_no_="E78252F2N882157"} 0E+00
+brother_printer_info{ip_address="192.168.0.100",main_firmware_version="1.70",memory_size="64",model_name="Brother HL-L2350DW series",node_name="BRW4CD5775E3B3B",serial_no_="E78252F2N882157"} 1E+00
 brother_printer_pages_printed_by_paper_size_total{paper_size="A4/Letter"} 1.7E+01
 brother_printer_pages_printed_by_paper_size_total{paper_size="A5"} 0E+00
 brother_printer_pages_printed_by_paper_size_total{paper_size="B5/Executive"} 0E+00

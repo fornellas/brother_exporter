@@ -95,6 +95,7 @@ func (c *Config) getInfoTimeSeries(entries Entries) ([]*prometheus.TimeSeries, [
 	if err != nil {
 		return nil, nil, fmt.Errorf("bad info time series: %s", err)
 	}
+	infoTimeSeries.Set(1.0)
 	return []*prometheus.TimeSeries{infoTimeSeries}, processedColumnNumbers, nil
 }
 
